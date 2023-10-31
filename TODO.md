@@ -1,0 +1,2 @@
+* Add the upload function based on this blog: https://blogs.oracle.com/cloud-infrastructure/post/exporting-oci-monitoring-service-metrics-to-datadog
+* Commit to the Oracle repo for the Python SDK: https://github.com/oracle/oci-python-sdk/tree/master/examples/showusage 

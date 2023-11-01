@@ -21,8 +21,6 @@
 #   -ds date     - Start Date in YYYY-MM-DD format
 #   -de date     - End Date in YYYY-MM-DD format (Not Inclusive)
 #   -ld days     - Add Days Combined with Start Date (de is ignored if specified)
-#   -report type - Report Type = PRODUCT, DAILY, REGION
-#
 #
 ##########################################################################
 # Info:
@@ -51,6 +49,7 @@
 # - UsageapiClient.request_summarized_usages - read usage-report
 #
 ##########################################################################
+
 import sys
 import argparse
 import oci
@@ -66,7 +65,7 @@ from datetime import datetime
 from datetime import date
 from datetime import timedelta
 
-version = "2023.10.31"
+version = "2023.11.01"
 
 ##########################################################################
 # Create Default String for yesterday's usage data
@@ -86,7 +85,6 @@ def print_header(name, category):
     print('#' * chars)
     print("#" + name.center(chars - 2, " ") + "#")
     print('#' * chars)
-
 
 ##########################################################################
 # custom argparse *date* type for user dates
@@ -111,7 +109,6 @@ def check_service_error(code):
             code == 'IncorrectState' or
             code == 'LimitExceeded'
             )
-
 
 ##########################################################################
 # Create signer for Authentication
@@ -183,9 +180,10 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
         return config, signer
 
 ##########################################################################
-# Data Dog Functions
+# Data Dog Specific Functions
 ##########################################################################
 
+# create metric names that conform to Data Dog standards
 def get_usage_metric(sku_name,type):
     metric_prefix = 'oci.usage.'
     metric_type = type + '.'
@@ -193,15 +191,13 @@ def get_usage_metric(sku_name,type):
     usage_metric= metric_prefix + metric_type + metric_name
     return usage_metric
 
-    
+# strip spaces and special characters to create usable tags  
 def get_tag_name(sku_name):
     tag_name = re.sub('[^A-Za-z0-9]+', '', sku_name)
     return tag_name
 
-##########################################################################
-# Usage Daily by Product
-##########################################################################
-def usage_daily_product(usageClient, tenant_id, time_usage_started, time_usage_ended):
+# Usage Daily by Product to Data Dog API Format
+def usage_by_product(usageClient, tenant_id, time_usage_started, time_usage_ended):
 
     try:
         # oci.usage_api.models.RequestSummarizedUsagesDetails
@@ -278,358 +274,19 @@ def usage_daily_product(usageClient, tenant_id, time_usage_started, time_usage_e
                 ],
             })
 
-        ################################
-        # Add all data to array data
-        ################################
-        data = []
-        min_date = None
-        max_date = None
-        currency = ""
-        for item in request_summarized_usages.data.items:
-            data.append({
-                'sku': item.sku_part_number,
-                'sku_name': item.sku_name if item.sku_part_number in item.sku_name else item.sku_part_number + " - " + item.sku_name,
-                'cost': item.computed_amount if item.computed_amount else 0,
-                'quantity': item.computed_quantity if item.computed_quantity else 0,
-                'currency': item.currency,
-                'time_usage_started': item.time_usage_started,
-                'time_usage_ended': item.time_usage_ended
-            })
-            if item.currency:
-                currency = item.currency
-            if not min_date or item.time_usage_started < min_date:
-                min_date = item.time_usage_started
-            if not max_date or item.time_usage_started > max_date:
-                max_date = item.time_usage_started
-
-        ################################
-        # Grouped Dict
-        ################################
-        gdata = {}
-        for item in data:
-            sku = item['sku']
-            if sku not in gdata:
-                gdata[sku] = {'cost': item['cost'], 'quantity': item['quantity'], 'sku_name': item['sku_name'], 'currency': item['currency']}
-            else:
-                gdata[sku]['cost'] += item['cost']
-                gdata[sku]['quantity'] += item['quantity']
-
-        ################################
-        # Compact based on SKUs
-        ################################
-        col = {
-            'product': 65,
-            'quantity': 14,
-            'days': 10,
-            'cost': 13,
-            'month': 13,
-            'year': 13
-        }
-
-        days = (max_date - min_date).days + 1
-
-        product_header = "Product Summary for " + min_date.strftime('%m/%d/%Y') + " - " + max_date.strftime('%m/%d/%Y') + " in " + currency
-        print_header(product_header, 3)
-        print("")
-        print(
-            "Product".ljust(col['product']) +
-            " Days".rjust(col['days']) +
-            " Quantity".rjust(col['quantity']) +
-            " Cost".rjust(col['cost']) +
-            " Month-31".rjust(col['month']) +
-            " Year".rjust(col['year'])
-        )
-
-        print(
-            "".ljust(col['product'], '=') +
-            " ".ljust(col['days'], '=') +
-            " ".ljust(col['quantity'], '=') +
-            " ".ljust(col['cost'], '=') +
-            " ".ljust(col['month'], '=') +
-            " ".ljust(col['year'], '=')
-        )
-
-        total = 0
-        for item_key in sorted(gdata, key=lambda x: gdata[x]['cost']):
-            item = gdata[item_key]
-            if item['cost'] == 0:
-                continue
-            total += item['cost']
-            line = item['sku_name'].ljust(col['product'])[0:col['product']]
-            line += "{:8,.0f}".format(days).rjust(col['days'])
-            line += "{:8,.1f}".format(item['quantity']).rjust(col['quantity'])
-            line += "{:8,.1f}".format(item['cost']).rjust(col['cost'])
-            line += "{:9,.0f}".format(item['cost'] / days * 31).rjust(col['month'])
-            line += "{:9,.0f}".format(item['cost'] / days * 365).rjust(col['year'])
-            print(line)
-
-        # Total
-        print(
-            "".ljust(col['product'], '=') +
-            " ".ljust(col['days'], '=') +
-            " ".ljust(col['quantity'], '=') +
-            " ".ljust(col['cost'], '=') +
-            " ".ljust(col['month'], '=') +
-            " ".ljust(col['year'], '=')
-        )
-        print(
-            "Total ".ljust(col['product'] + col['days'] + col['quantity']) +
-            " {:8,.1f}".format(total).rjust(col['cost']) +
-            " {:9,.0f}".format(total / days * 31).rjust(col['month']) +
-            " {:9,.0f}".format(total / days * 365).rjust(col['year'])
-        )
-
     except oci.exceptions.ServiceError as e:
         print("\nService Error at 'usage_daily_product' - " + str(e))
 
     except Exception as e:
         print("\nException Error at 'usage_daily_product' - " + str(e))
 
-    # json_object = json.loads(data_dog_metric_data)
     data_dog_metrics_json = json.dumps(data_dog_metric_data, indent=2)
     print(data_dog_metrics_json)
     return data_dog_metrics_json
 
-##########################################################################
-# Usage Daily by Region
-##########################################################################
-def usage_daily_region(usageClient, tenant_id, time_usage_started, time_usage_ended):
-
-    try:
-        # oci.usage_api.models.RequestSummarizedUsagesDetails
-        requestSummarizedUsagesDetails = oci.usage_api.models.RequestSummarizedUsagesDetails(
-            tenant_id=tenant_id,
-            granularity='DAILY',
-            query_type='COST',
-            group_by=['region'],
-            time_usage_started=time_usage_started.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            time_usage_ended=time_usage_ended.strftime('%Y-%m-%dT%H:%M:%SZ')
-        )
-
-        # usageClient.request_summarized_usages
-        request_summarized_usages = usageClient.request_summarized_usages(
-            requestSummarizedUsagesDetails,
-            retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY
-        )
-
-        ################################
-        # Add all data to array data
-        ################################
-        data = []
-        min_date = None
-        max_date = None
-        currency = ""
-        for item in request_summarized_usages.data.items:
-            data.append({
-                'region': item.region,
-                'cost': item.computed_amount if item.computed_amount else 0,
-                'quantity': item.computed_quantity if item.computed_quantity else 0,
-                'currency': item.currency,
-                'time_usage_started': item.time_usage_started,
-                'time_usage_ended': item.time_usage_ended
-            })
-            if item.currency:
-                currency = item.currency
-            if not min_date or item.time_usage_started < min_date:
-                min_date = item.time_usage_started
-            if not max_date or item.time_usage_started > max_date:
-                max_date = item.time_usage_started
-
-        ################################
-        # Grouped Dict
-        ################################
-        gdata = {}
-        for item in data:
-            region = item['region']
-            if region not in gdata:
-                gdata[region] = {'cost': item['cost'], 'quantity': item['quantity'], 'currency': item['currency']}
-            else:
-                gdata[region]['cost'] += item['cost']
-                gdata[region]['quantity'] += item['quantity']
-
-        ################################
-        # Compact based on SKUs
-        ################################
-        col = {
-            'region': 15,
-            'quantity': 14,
-            'days': 10,
-            'cost': 13,
-            'month': 13,
-            'year': 13
-        }
-
-        days = (max_date - min_date).days + 1
-
-        product_header = "Region Summary for " + min_date.strftime('%m/%d/%Y') + " - " + max_date.strftime('%m/%d/%Y') + " in " + currency
-        print_header(product_header, 3)
-        print("")
-        print(
-            "Region".ljust(col['region']) +
-            " Days".rjust(col['days']) +
-            " Quantity".rjust(col['quantity']) +
-            " Cost".rjust(col['cost']) +
-            " Month-31".rjust(col['month']) +
-            " Year".rjust(col['year'])
-        )
-
-        print(
-            "".ljust(col['region'], '=') +
-            " ".ljust(col['days'], '=') +
-            " ".ljust(col['quantity'], '=') +
-            " ".ljust(col['cost'], '=') +
-            " ".ljust(col['month'], '=') +
-            " ".ljust(col['year'], '=')
-        )
-
-        total = 0
-        for item_key in sorted(gdata, key=lambda x: gdata[x]['cost']):
-            item = gdata[item_key]
-            if item['cost'] == 0:
-                continue
-            total += item['cost']
-            line = item_key.ljust(col['region'])
-            line += "{:8,.0f}".format(days).rjust(col['days'])
-            line += "{:8,.1f}".format(item['quantity']).rjust(col['quantity'])
-            line += "{:8,.1f}".format(item['cost']).rjust(col['cost'])
-            line += "{:9,.0f}".format(item['cost'] / days * 31).rjust(col['month'])
-            line += "{:9,.0f}".format(item['cost'] / days * 365).rjust(col['year'])
-            print(line)
-
-        # Total
-        print(
-            "".ljust(col['region'], '=') +
-            " ".ljust(col['days'], '=') +
-            " ".ljust(col['quantity'], '=') +
-            " ".ljust(col['cost'], '=') +
-            " ".ljust(col['month'], '=') +
-            " ".ljust(col['year'], '=')
-        )
-        print(
-            "Total ".ljust(col['region'] + col['days'] + col['quantity']) +
-            " {:8,.1f}".format(total).rjust(col['cost']) +
-            " {:9,.0f}".format(total / days * 31).rjust(col['month']) +
-            " {:9,.0f}".format(total / days * 365).rjust(col['year'])
-        )
-
-    except oci.exceptions.ServiceError as e:
-        print("\nService Error at 'usage_daily_region' - " + str(e))
-
-    except Exception as e:
-        print("\nException Error at 'usage_daily_region' - " + str(e))
-
-
-##########################################################################
-# Usage Daily Summary
-##########################################################################
-def usage_daily_summary(usageClient, tenant_id, time_usage_started, time_usage_ended):
-
-    try:
-
-        # oci.usage_api.models.RequestSummarizedUsagesDetails
-        requestSummarizedUsagesDetails = oci.usage_api.models.RequestSummarizedUsagesDetails(
-            tenant_id=tenant_id,
-            granularity='DAILY',
-            query_type='COST',
-            time_usage_started=time_usage_started.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            time_usage_ended=time_usage_ended.strftime('%Y-%m-%dT%H:%M:%SZ')
-        )
-
-        # usageClient.request_summarized_usages
-        request_summarized_usages = usageClient.request_summarized_usages(
-            requestSummarizedUsagesDetails,
-            retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY
-        )
-
-        ################################
-        # Add all data to array data
-        ################################
-        data = []
-        min_date = None
-        max_date = None
-        for item in request_summarized_usages.data.items:
-            data.append({
-                'day': item.time_usage_started.strftime('%Y-%m-%d'),
-                'cost': item.computed_amount if item.computed_amount else 0,
-                'quantity': item.computed_quantity if item.computed_quantity else 0,
-                'currency': item.currency,
-                'time_usage_started': item.time_usage_started,
-                'time_usage_ended': item.time_usage_ended
-            })
-            if not min_date or item.time_usage_started < min_date:
-                min_date = item.time_usage_started
-            if not max_date or item.time_usage_started > max_date:
-                max_date = item.time_usage_started
-
-        ################################
-        # Grouped Dict
-        ################################
-        gdata = {}
-        for item in data:
-            day = item['day']
-            if day not in gdata:
-                gdata[day] = {'cost': item['cost'], 'quantity': item['quantity'], 'currency': item['currency']}
-            else:
-                gdata[day]['cost'] += item['cost']
-                gdata[day]['quantity'] += item['quantity']
-
-        ################################
-        # Compact based on SKUs
-        ################################
-        col = {
-            'day': 15,
-            'cost': 15,
-            'month': 15,
-            'year': 15
-        }
-
-        product_header = "Daily Summary for " + min_date.strftime('%m/%d/%Y') + " - " + max_date.strftime('%m/%d/%Y')
-        print_header(product_header, 3)
-        print("")
-        print(
-            "Day".ljust(col['day']) +
-            " Cost".rjust(col['cost']) +
-            " Month-31".rjust(col['month']) +
-            " Year".rjust(col['year'])
-        )
-
-        print(
-            "".ljust(col['day'], '=') +
-            " ".ljust(col['cost'], '=') +
-            " ".ljust(col['month'], '=') +
-            " ".ljust(col['year'], '=')
-        )
-
-        total = 0
-        for item_key in sorted(gdata, key=lambda x: x):
-            item = gdata[item_key]
-            if item['cost'] == 0:
-                continue
-            total += item['cost']
-            line = item_key.ljust(col['day'])[0:col['day']]
-            line += "{:8,.1f}".format(item['cost']).rjust(col['cost'])
-            line += "{:9,.0f}".format(item['cost'] * 31).rjust(col['month'])
-            line += "{:9,.0f}".format(item['cost'] * 365).rjust(col['year'])
-            print(line)
-
-        # Total
-        print(
-            "".ljust(col['day'], '=') +
-            " ".ljust(col['cost'], '=') +
-            " ".ljust(col['month'], '=') +
-            " ".ljust(col['year'], '=')
-        )
-        print(
-            "Total ".ljust(col['day']) +
-            " {:8,.1f}".format(total).rjust(col['cost'])
-        )
-
-    except oci.exceptions.ServiceError as e:
-        print("\nService Error at 'usage_daily_summary' - " + str(e))
-
-    except Exception as e:
-        print("\nException Error at 'usage_daily_summary' - " + str(e))
-
+# Upload to Data Dog
+def upload_to_data_dog(metrics):
+    print("Uploading to Data Dog")
 
 ##########################################################################
 # Main Process
@@ -647,30 +304,7 @@ def main():
     parser.add_argument("-ds", default=yesterday, dest='date_start', help="Start Date - format YYYY-MM-DD", type=valid_date_type)
     parser.add_argument("-de", default=today, dest='date_end', help="End Date - format YYYY-MM-DD, (Not Inclusive)", type=valid_date_type)
     parser.add_argument("-days", default=None, dest='days', help="Add Days Combined with Start Date (de is ignored if specified)", type=int)
-    parser.add_argument("-report", default="PRODUCT", dest='report', help="Report Type = PRODUCT / DAILY / REGION / ALL ( Default = ALL )")
     cmd = parser.parse_args()
-
-    if len(sys.argv) < 2:
-        parser.print_help()
-        return
-
-    if not cmd.report or not (cmd.report == "DAILY" or cmd.report == "PRODUCT" or cmd.report == "REGION" or cmd.report == "ALL"):
-
-        parser.print_help()
-        print("")
-        print("**********************************************************")
-        print("***          Using Defaults for Product Report         ***")
-        print("**********************************************************")
-        return
-
-    if not (cmd.date_start):
-
-        parser.print_help()
-        print("")
-        print("**********************************************************")
-        print("***       Using Defaults for Start and End Date        ***")
-        print("**********************************************************")
-        return
 
     # Start print time info
     print_header("Running Export Usage to Data Dog", 0)
@@ -694,7 +328,7 @@ def main():
     ############################################
     time_usage_started = None
     time_usage_ended = None
-    report_type = cmd.report
+    report_type = "PRODUCT"
 
     if cmd.date_start and cmd.date_start > datetime.now():
         print("\n!!! Error, Start date cannot be in the future !!!")
@@ -766,15 +400,7 @@ def main():
         usage_client = oci.usage_api.UsageapiClient(config, signer=signer)
         if cmd.proxy:
             usage_client.base_client.session.proxies = {'https': cmd.proxy}
-
-        if report_type == 'DAILY' or report_type == 'ALL':
-            usage_daily_summary(usage_client, tenant_id, time_usage_started, time_usage_ended)
-
-        if report_type == 'PRODUCT' or report_type == 'ALL':
-            usage_daily_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
-
-        if report_type == 'REGION' or report_type == 'ALL':
-            usage_daily_region(usage_client, tenant_id, time_usage_started, time_usage_ended)
+        usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
 
     except Exception as e:
         raise RuntimeError("\nError at main function - " + str(e))

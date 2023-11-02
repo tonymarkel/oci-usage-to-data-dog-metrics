@@ -7,7 +7,7 @@
 #
 # @authors: 
 # Adi Zohar, Oct 07 2021
-# Tony Markel, Oct 31 2021
+# Tony Markel, Oct 31 2023
 #
 # Supports Python 3
 ##########################################################################
@@ -59,6 +59,7 @@ import io
 import json
 import logging
 import re
+import requests
 from fdk import response
 from time import mktime
 from datetime import datetime
@@ -68,23 +69,21 @@ from datetime import timedelta
 version = "2023.11.01"
 
 ##########################################################################
+# Set all registered loggers to the configured log_level
+##########################################################################
+logging_level = os.getenv('LOGGING_LEVEL', 'INFO')
+loggers = [logging.getLogger()] + [logging.getLogger(name) for name in logging.root.manager.loggerDict]
+[logger.setLevel(logging.getLevelName(logging_level)) for logger in loggers]
+# Exception stack trace logging
+is_tracing = eval(os.getenv('ENABLE_TRACING', "False"))
+
+##########################################################################
 # Create Default String for yesterday's usage data
 ##########################################################################
 today_api = date.today()
 yesterday_api = today_api - timedelta(days = 1)
 today = str(today_api)
 yesterday = str(yesterday_api)
-
-##########################################################################
-# Print header centered
-##########################################################################
-def print_header(name, category):
-    options = {0: 120, 1: 100, 2: 90, 3: 85}
-    chars = int(options[category])
-    print("")
-    print('#' * chars)
-    print("#" + name.center(chars - 2, " ") + "#")
-    print('#' * chars)
 
 ##########################################################################
 # custom argparse *date* type for user dates
@@ -125,7 +124,7 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
             return config, signer
 
         except Exception:
-            print_header("Error obtaining instance principals certificate, aborting", 0)
+            logging.getLogger().critical("Error obtaining instance principals certificate, aborting", 0)
             raise SystemExit
 
     # -----------------------------
@@ -140,8 +139,8 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
 
             # check if file exist
             if env_config_file is None or env_config_section is None:
-                print("*** OCI_CONFIG_FILE and OCI_CONFIG_PROFILE env variables not found, abort. ***")
-                print("")
+                logging.getLogger().critical("*** OCI_CONFIG_FILE and OCI_CONFIG_PROFILE env variables not found, abort. ***")
+                logging.getLogger().critical("")
                 raise SystemExit
 
             config = oci.config.from_file(env_config_file, env_config_section)
@@ -151,11 +150,10 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
                 delegation_token = delegation_token_file.read().strip()
                 # get signer from delegation token
                 signer = oci.auth.signers.InstancePrincipalsDelegationTokenSigner(delegation_token=delegation_token)
-
                 return config, signer
 
         except KeyError:
-            print("* Key Error obtaining delegation_token_file")
+            logging.getLogger().critical("* Key Error obtaining delegation_token_file")
             raise SystemExit
 
         except Exception:
@@ -275,18 +273,49 @@ def usage_by_product(usageClient, tenant_id, time_usage_started, time_usage_ende
             })
 
     except oci.exceptions.ServiceError as e:
-        print("\nService Error at 'usage_daily_product' - " + str(e))
+        logging.getLogger().debug("\nService Error at 'usage_daily_product' - " + str(e))
 
     except Exception as e:
-        print("\nException Error at 'usage_daily_product' - " + str(e))
+        logging.getLogger().debug("\nException Error at 'usage_daily_product' - " + str(e))
 
     data_dog_metrics_json = json.dumps(data_dog_metric_data, indent=2)
-    print(data_dog_metrics_json)
+    logging.getLogger().info(data_dog_metrics_json)
     return data_dog_metrics_json
 
 # Upload to Data Dog
 def upload_to_data_dog(metrics):
-    print("Uploading to Data Dog")
+    logging.getLogger().info("Uploading to Data Dog")
+    api_endpoint = os.getenv('DATADOG_METRICS_API_ENDPOINT', 'not-configured')
+    api_key = os.getenv('DATADOG_API_KEY', 'not-configured')
+    is_forwarding = eval(os.getenv('FORWARD_TO_DATADOG', "True"))
+    # metric_tag_keys = os.getenv('METRICS_TAG_KEYS', 'name, namespace, displayName, resourceDisplayName, unit')
+    # metric_tag_set = set()
+
+    if is_forwarding is False:
+        logging.getLogger().error("DataDog forwarding is disabled - nothing sent")
+        return
+
+    if 'v2' not in api_endpoint:
+        raise RuntimeError('Requires API endpoint version "v2": "{}"'.format(api_endpoint))
+
+    # creating a session and adapter to avoid recreating
+    # a new connection pool between each POST call
+
+    try:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+        session.mount('https://', adapter)
+
+        for series in metrics:
+            api_headers = {'Content-type': 'application/json', 'DD-API-KEY': api_key}
+            logging.getLogger().debug("json to datadog: {}".format (json.dumps(series)))
+            response = session.post(api_endpoint, data=json.dumps(series), headers=api_headers)
+
+            if response.status_code != 202:
+                raise Exception ('error {} sending to DataDog: {}'.format(response.status_code, response.reason))
+
+    finally:
+        session.close()
 
 ##########################################################################
 # Main Process
@@ -306,22 +335,20 @@ def main():
     parser.add_argument("-days", default=None, dest='days', help="Add Days Combined with Start Date (de is ignored if specified)", type=int)
     cmd = parser.parse_args()
 
-    # Start print time info
-    print_header("Running Export Usage to Data Dog", 0)
-    print("Author          : Adi Zohar, Tony Markel")
-    print("License         : This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.")
-    print("Machine         : " + platform.node() + " (" + platform.machine() + ")")
-    print("App Version     : " + version)
-    print("OCI SDK Version : " + oci.version.__version__)
-    print("Python Version  : " + platform.python_version())
+    # Log parameters used for debugging
+    logging.getLogger().info("Running Export Usage to Data Dog", 0)
+    logging.getLogger().debug("Machine         : " + platform.node() + " (" + platform.machine() + ")")
+    logging.getLogger().debug("App Version     : " + version)
+    logging.getLogger().debug("OCI SDK Version : " + oci.version.__version__)
+    logging.getLogger().debug("Python Version  : " + platform.python_version())
     if cmd.is_instance_principals:
-        print("Authentication  : Instance Principals")
+        logging.getLogger().debug("Authentication  : Instance Principals")
     elif cmd.is_delegation_token:
-        print("Authentication  : Instance Principals With Delegation Token")
+        logging.getLogger().debug("Authentication  : Instance Principals With Delegation Token")
     else:
-        print("Authentication  : Config File")
-    print("Date/Time       : " + str(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    print("Command Line    : " + ' '.join(x for x in sys.argv[1:]))
+        logging.getLogger().debug("Authentication  : Config File")
+    logging.getLogger().debug("Date/Time       : " + str(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    logging.getLogger().debug("Command Line    : " + ' '.join(x for x in sys.argv[1:]))
 
     ############################################
     # Date Validation
@@ -331,12 +358,12 @@ def main():
     report_type = "PRODUCT"
 
     if cmd.date_start and cmd.date_start > datetime.now():
-        print("\n!!! Error, Start date cannot be in the future !!!")
-        sys.exit()
+        logging.getLogger().critical("\n!!! Error, Start date cannot be in the future !!!")
+        raise SystemExit
 
     if cmd.date_start and cmd.date_end and cmd.date_start > cmd.date_end:
-        print("\n!!! Error, Start date cannot be greater than End date !!!")
-        sys.exit()
+        logging.getLogger().critical("\n!!! Error, Start date cannot be greater than End date !!!")
+        raise SystemExit
 
     if cmd.date_start:
         time_usage_started = cmd.date_start
@@ -348,8 +375,8 @@ def main():
     else:
         time_usage_ended = time_usage_started + datetime.timedelta(days=1)
 
-    print("Start Date      : " + time_usage_started.strftime('%m/%d/%Y'))
-    print("End Date        : " + time_usage_ended.strftime('%m/%d/%Y') + " Not Included")
+    logging.getLogger().debug("Start Date      : " + time_usage_started.strftime('%m/%d/%Y'))
+    logging.getLogger().debug("End Date        : " + time_usage_ended.strftime('%m/%d/%Y') + " Not Included")
 
     ############################################
     # Days check
@@ -357,8 +384,8 @@ def main():
     days = (time_usage_ended - time_usage_started).days
 
     if days > 93:
-        print("\n!!! Error, Max 93 days period allowed, input is " + str(days) + " days, !!!")
-        sys.exit()
+        logging.getLogger().critical("\n!!! Error, Max 93 days period allowed, input is " + str(days) + " days, !!!")
+        raise SystemExit
 
     ############################################
     # create signer
@@ -366,9 +393,9 @@ def main():
     config, signer = create_signer(cmd.config_file, cmd.config_profile, cmd.is_instance_principals, cmd.is_delegation_token)
     tenant_id = ""
 
-    print_header("Fetching data", 0)
+    logging.getLogger().info("Fetching data", 0)
     try:
-        print("\nConnecting to Identity Service...\n")
+        logging.getLogger().info("\nConnecting to Identity Service...\n")
         identity = oci.identity.IdentityClient(config, signer=signer)
         if cmd.proxy:
             identity.base_client.session.proxies = {'https': cmd.proxy}
@@ -385,24 +412,37 @@ def main():
         config['region'] = tenancy_home_region
         signer.region = tenancy_home_region
 
-        print("Tenant Name  : " + str(tenancy.name))
-        print("Tenant Id    : " + tenancy.id)
-        print("Home Region  : " + tenancy_home_region)
+        logging.getLogger().debug("Tenant Name  : " + str(tenancy.name))
+        logging.getLogger().debug("Tenant Id    : " + tenancy.id)
+        logging.getLogger().debug("Home Region  : " + tenancy_home_region)
 
     except Exception as e:
+        logging.getLogger().critical(e)
         raise RuntimeError("\nError fetching tenant information - " + str(e))
 
     ############################################
-    # Connection to UsageAPI
+    # Get Data from UsageAPI
     ############################################
     try:
-        print("\nConnecting to UsageAPI Service...")
+        logging.getLogger().info("\nConnecting to OCI UsageAPI Service...")
         usage_client = oci.usage_api.UsageapiClient(config, signer=signer)
         if cmd.proxy:
             usage_client.base_client.session.proxies = {'https': cmd.proxy}
-        usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
+        data_dog_metrics_json = usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
 
     except Exception as e:
+        logging.getLogger().critical(e)
+        raise RuntimeError("\nError at main function - " + str(e))
+        
+    ############################################
+    # Upload to Data Dog API
+    ############################################
+    try:
+        logging.getLogger().info("\nUploading Data to the DataDog API...")
+        upload_to_data_dog(data_dog_metrics_json)
+
+    except Exception as e:
+        logging.getLogger().critical(e)
         raise RuntimeError("\nError at main function - " + str(e))
 
 ##########################################################################

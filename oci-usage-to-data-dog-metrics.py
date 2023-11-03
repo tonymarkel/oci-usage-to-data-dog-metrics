@@ -236,7 +236,7 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
                             "type": 0,
                             "points": [
                                 {
-                                    "timestamp": time_usage_started.timestamp(),
+                                    "timestamp": int(datetime.now().timestamp()),
                                     "value": item.computed_quantity
                                 }
                             ],
@@ -259,10 +259,11 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
                         {
                             "metric": get_metric_name('cost'),
                             "type": 0,
+                            "unit": currency,
                             "points": [
                                 {
-                                    "timestamp": time_usage_started.timestamp(),
-                                    "value": item.computed_amount,
+                                    "timestamp": int(datetime.now().timestamp()),
+                                    "value": round(item.computed_amount, 2),
                                 }
                             ],
                             "tags": [
@@ -283,9 +284,9 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
     except Exception as e:
         logging.getLogger().debug("\nException Error at 'usage_daily_product' - " + str(e))
 
-    data_dog_metrics_json = json.dumps(data_dog_metric_data, indent=2)
-    logging.getLogger().info(data_dog_metrics_json)
-    return data_dog_metrics_json
+    # data_dog_metrics_json = json.dumps(data_dog_metric_data, indent=2)
+    # logging.getLogger().info(data_dog_metrics_json)
+    return data_dog_metric_data
 
 
 # Upload to Data Dog
@@ -293,9 +294,8 @@ def upload_to_data_dog(metrics):
     logging.getLogger().info("Uploading to Data Dog")
     api_endpoint = os.getenv('DATADOG_METRICS_API_ENDPOINT', 'https://api.datadoghq.com/api/v2/series')
     api_key = os.getenv('DATADOG_API_KEY', 'not-configured')
+    app_key = os.getenv('DATADOG_APP_KEY', 'not-configured')
     is_forwarding = eval(os.getenv('FORWARD_TO_DATADOG', "False"))
-    # metric_tag_keys = os.getenv('METRICS_TAG_KEYS', 'name, namespace, displayName, resourceDisplayName, unit')
-    # metric_tag_set = set()
 
     if is_forwarding is False:
         print(metrics)
@@ -313,11 +313,12 @@ def upload_to_data_dog(metrics):
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
         session.mount('https://', adapter)
 
+        print("Exporting usage and cost metrics to DataDog")
         for series in metrics:
-            api_headers = {'Content-type': 'application/json', 'DD-API-KEY': api_key}
-            logging.getLogger().debug("json to datadog: {}".format(json.dumps(series)))
+            api_headers = {'Content-type': 'application/json', 'DD-API-KEY': api_key, 'DD-APPLICATION-KEY': app_key}
+            print(series)
             response = session.post(api_endpoint, data=json.dumps(series), headers=api_headers)
-
+            print(response)
             if response.status_code != 202:
                 raise Exception('error {} sending to DataDog: {}'.format(response.status_code, response.reason))
 
@@ -443,7 +444,7 @@ def main():
         usage_client = oci.usage_api.UsageapiClient(config, signer=signer)
         if cmd.proxy:
             usage_client.base_client.session.proxies = {'https': cmd.proxy}
-        data_dog_metrics_json = usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
+        data_dog_metrics_data = usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
 
     except Exception as e:
         logging.getLogger().critical(e)
@@ -454,7 +455,7 @@ def main():
     ############################################
     try:
         logging.getLogger().info("\nUploading Data to the DataDog API...")
-        upload_to_data_dog(data_dog_metrics_json)
+        upload_to_data_dog(data_dog_metrics_data)
 
     except Exception as e:
         logging.getLogger().critical(e)

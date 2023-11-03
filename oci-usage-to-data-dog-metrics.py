@@ -186,7 +186,8 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
 
 # create metric names that conform to Data Dog standards
 def get_metric_name(type):
-    return f'oci.{type}'
+    prefix = os.getenv('OCI_DATADOG_METRIC_PREFIX', 'oci')
+    return f'{prefix}.{type}'
 
 
 # strip spaces and special characters to create usable tags

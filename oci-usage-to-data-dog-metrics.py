@@ -71,6 +71,7 @@ version = "2023.11.01"
 # Set all registered loggers to the configured log_level
 ##########################################################################
 logging_level = os.getenv('LOGGING_LEVEL', 'INFO')
+logging.basicConfig(level=logging_level)
 loggers = [logging.getLogger()] + [logging.getLogger(name) for name in logging.root.manager.loggerDict]
 [logger.setLevel(logging.getLevelName(logging_level)) for logger in loggers]
 # Exception stack trace logging

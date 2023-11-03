@@ -214,10 +214,9 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
             request_summarized_usages_details,
             retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY
         )
-        # write request_summarized_usages.data.items to file
-        with open('request_summarized_usages.json', 'w') as f:
-            f.write(str(request_summarized_usages.data.items))
 
+        # print out request_summarized_usages.data.items to file
+        logging.getLogger().debug(f"request_summarized_usages: {str(request_summarized_usages.data.items)}")
 
         min_date = None
         max_date = None

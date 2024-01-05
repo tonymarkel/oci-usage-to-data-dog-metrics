@@ -200,36 +200,71 @@ def get_tag_name(sku_name):
 def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended):
     data_dog_metric_data = []
     try:
-        # oci.usage_api.models.RequestSummarizedUsagesDetails
+        # Get oke pool tags
         request_summarized_usages_details = oci.usage_api.models.RequestSummarizedUsagesDetails(
             tenant_id=tenant_id,
             granularity='DAILY',
             query_type='COST',
-            group_by=['skuPartNumber', 'skuName', 'region', 'unit'],
+            group_by=['tagNamespace', 'tagKey', 'tagValue'],
+            filter=oci.usage_api.models.Filter(operator="AND", tags=[oci.usage_api.models.Tag(namespace='oke', key='pool')]),
             time_usage_started=time_usage_started.strftime('%Y-%m-%dT%H:%M:%SZ'),
             time_usage_ended=time_usage_ended.strftime('%Y-%m-%dT%H:%M:%SZ')
         )
 
-        # usageClient.request_summarized_usages
         request_summarized_usages = usage_client.request_summarized_usages(
             request_summarized_usages_details,
             retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY
         )
 
-        # print out request_summarized_usages.data.items to file
-        logging.getLogger().debug(f"request_summarized_usages: {str(request_summarized_usages.data.items)}")
+        node_pool_tags = [i.tags[0] for i in request_summarized_usages.data.items]
+        logging.getLogger().debug(f"Found following pool tags: {node_pool_tags}")
 
-        min_date = None
-        max_date = None
-        currency = "USD"
+        # Since we can't filter by both skuName and tag at the same time, get cost data for each pool tag separately
+        node_pool_tags.append({})  # Add empty tag to get cost data for cost metrics without pool tag
+        for pool_tag in node_pool_tags:
+            pool = pool_tag.value if pool_tag else None
 
-        ################################
-        # Add all cost data to Data Dog array - wayneyu (github)
-        ################################
-        tenancy = tenant_id
-        # Usage Data
-        for item in request_summarized_usages.data.items:
-            if item.currency == currency:
+            request_summarized_usages_details = oci.usage_api.models.RequestSummarizedUsagesDetails(
+                tenant_id=tenant_id,
+                granularity='DAILY',
+                query_type='COST',
+                filter=oci.usage_api.models.Filter(
+                    operator="AND" if pool else "NOT",
+                    tags=[oci.usage_api.models.Tag(namespace='oke', key='pool', value=pool)] if pool else [oci.usage_api.models.Tag(namespace='oke', key='pool')]
+                ),
+                group_by=['skuPartNumber', 'skuName', 'region', 'unit'],
+                time_usage_started=time_usage_started.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                time_usage_ended=time_usage_ended.strftime('%Y-%m-%dT%H:%M:%SZ')
+            )
+
+            # usageClient.request_summarized_usages
+            request_summarized_usages = usage_client.request_summarized_usages(
+                request_summarized_usages_details,
+                retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY
+            )
+
+            # print out request_summarized_usages.data.items to file
+            logging.getLogger().debug(f"request_summarized_usages: {str(request_summarized_usages.data.items)}")
+
+            min_date = None
+            max_date = None
+            currency = "USD"
+
+            ################################
+            # Add all cost data to Data Dog array - wayneyu (github)
+            ################################
+            tenancy = tenant_id
+            timestamp = datetime.now().timestamp()
+            for item in request_summarized_usages.data.items:
+                # Usage Data
+                # if item.currency == currency or pool is None:
+                name = get_tag_name(item.sku_name) if item.sku_name else "None"
+                sku_name = item.sku_name if item.sku_name else "None"
+                sku_part_number = item.sku_part_number if item.sku_part_number else "None"
+                region = item.region if item.region else "None"
+                unit = item.unit if item.unit else "None"
+                pool = pool if pool else "Others"
+
                 data_dog_metric_data.append({
                     "series": [
                         {
@@ -237,43 +272,46 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
                             "type": 0,
                             "points": [
                                 {
-                                    "timestamp": int(datetime.now().timestamp()),
+                                    "timestamp": int(timestamp),
                                     "value": item.computed_quantity
                                 }
                             ],
                             "tags": [
-                                "name:" + get_tag_name(item.sku_name),
-                                "unit:" + item.unit,
-                                "sku:" + item.sku_part_number,
-                                "displayName:" + item.sku_name,
-                                "region:" + item.region,
-                                "tenancy:" + tenancy
+                                "name:" + name,
+                                "unit:" + unit,
+                                "sku:" + sku_part_number,
+                                "displayName:" + sku_name,
+                                "region:" + region,
+                                "tenancy:" + tenancy,
+                                "pool:" + pool
                             ]
                         }
                     ],
                 })
-        # Cost Data
-        for item in request_summarized_usages.data.items:
-            if item.currency == currency:
+
+                # Cost Data
+                # if item.currency == currency or pool is None:
+
                 data_dog_metric_data.append({
                     "series": [
                         {
                             "metric": get_metric_name('cost'),
                             "type": 0,
-                            "unit": currency,
+                            "unit": item.currency if item.currency else currency,
                             "points": [
                                 {
-                                    "timestamp": int(datetime.now().timestamp()),
+                                    "timestamp": int(timestamp),
                                     "value": round(item.computed_amount, 2),
                                 }
                             ],
                             "tags": [
-                                "name:" + get_tag_name(item.sku_name),
-                                "unit:" + item.unit,
-                                "sku:" + item.sku_part_number,
-                                "displayName:" + item.sku_name,
-                                "region:" + item.region,
-                                "tenancy:" + tenancy
+                                "name:" + name,
+                                "unit:" + unit,
+                                "sku:" + sku_part_number,
+                                "displayName:" + sku_name,
+                                "region:" + region,
+                                "tenancy:" + tenancy,
+                                "pool:" + pool
                             ]
                         }
                     ],
@@ -300,7 +338,7 @@ def upload_to_data_dog(metrics):
 
     if is_forwarding is False:
         print(metrics)
-        # logging.getLogger().error("DataDog forwarding is disabled - nothing sent")
+        logging.getLogger().error("DataDog forwarding is disabled - nothing sent")
         return
 
     if 'v2' not in api_endpoint:

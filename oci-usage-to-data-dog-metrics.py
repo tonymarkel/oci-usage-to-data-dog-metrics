@@ -257,13 +257,13 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
             timestamp = datetime.now().timestamp()
             for item in request_summarized_usages.data.items:
                 # Usage Data
-                # if item.currency == currency or pool is None:
                 name = get_tag_name(item.sku_name) if item.sku_name else "None"
                 sku_name = item.sku_name if item.sku_name else "None"
                 sku_part_number = item.sku_part_number if item.sku_part_number else "None"
                 region = item.region if item.region else "None"
                 unit = item.unit if item.unit else "None"
                 pool = pool if pool else "Others"
+                computed_amount = item.computed_amount if item.computed_amount else 0
 
                 data_dog_metric_data.append({
                     "series": [
@@ -290,7 +290,6 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
                 })
 
                 # Cost Data
-                # if item.currency == currency or pool is None:
 
                 data_dog_metric_data.append({
                     "series": [
@@ -301,7 +300,7 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
                             "points": [
                                 {
                                     "timestamp": int(timestamp),
-                                    "value": round(item.computed_amount, 2),
+                                    "value": round(computed_amount, 2),
                                 }
                             ],
                             "tags": [

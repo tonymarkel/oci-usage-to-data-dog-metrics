@@ -60,6 +60,7 @@ import json
 import logging
 import re
 import requests
+from fdk import response
 from time import mktime
 from datetime import datetime
 from datetime import date
@@ -71,7 +72,6 @@ version = "2023.11.01"
 # Set all registered loggers to the configured log_level
 ##########################################################################
 logging_level = os.getenv('LOGGING_LEVEL', 'INFO')
-logging.basicConfig(level=logging_level)
 loggers = [logging.getLogger()] + [logging.getLogger(name) for name in logging.root.manager.loggerDict]
 [logger.setLevel(logging.getLevelName(logging_level)) for logger in loggers]
 # Exception stack trace logging
@@ -140,8 +140,7 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
 
             # check if file exist
             if env_config_file is None or env_config_section is None:
-                logging.getLogger().critical(
-                    "*** OCI_CONFIG_FILE and OCI_CONFIG_PROFILE env variables not found, abort. ***")
+                logging.getLogger().critical("*** OCI_CONFIG_FILE and OCI_CONFIG_PROFILE env variables not found, abort. ***")
                 logging.getLogger().critical("")
                 raise SystemExit
 
@@ -285,22 +284,21 @@ def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_end
     except Exception as e:
         logging.getLogger().debug("\nException Error at 'usage_daily_product' - " + str(e))
 
-    # data_dog_metrics_json = json.dumps(data_dog_metric_data, indent=2)
-    # logging.getLogger().info(data_dog_metrics_json)
-    return data_dog_metric_data
-
+    data_dog_metrics_json = json.dumps(data_dog_metric_data, indent=2)
+    logging.getLogger().info(data_dog_metrics_json)
+    return data_dog_metrics_json
 
 # Upload to Data Dog
 def upload_to_data_dog(metrics):
     logging.getLogger().info("Uploading to Data Dog")
-    api_endpoint = os.getenv('DATADOG_METRICS_API_ENDPOINT', 'https://api.datadoghq.com/api/v2/series')
+    api_endpoint = os.getenv('DATADOG_METRICS_API_ENDPOINT', 'not-configured')
     api_key = os.getenv('DATADOG_API_KEY', 'not-configured')
-    app_key = os.getenv('DATADOG_APP_KEY', 'not-configured')
-    is_forwarding = eval(os.getenv('FORWARD_TO_DATADOG', "False"))
+    is_forwarding = eval(os.getenv('FORWARD_TO_DATADOG', "True"))
+    # metric_tag_keys = os.getenv('METRICS_TAG_KEYS', 'name, namespace, displayName, resourceDisplayName, unit')
+    # metric_tag_set = set()
 
     if is_forwarding is False:
-        print(metrics)
-        # logging.getLogger().error("DataDog forwarding is disabled - nothing sent")
+        logging.getLogger().error("DataDog forwarding is disabled - nothing sent")
         return
 
     if 'v2' not in api_endpoint:
@@ -314,18 +312,16 @@ def upload_to_data_dog(metrics):
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
         session.mount('https://', adapter)
 
-        print("Exporting usage and cost metrics to DataDog")
         for series in metrics:
-            api_headers = {'Content-type': 'application/json', 'DD-API-KEY': api_key, 'DD-APPLICATION-KEY': app_key}
-            print(series)
+            api_headers = {'Content-type': 'application/json', 'DD-API-KEY': api_key}
+            logging.getLogger().debug("json to datadog: {}".format (json.dumps(series)))
             response = session.post(api_endpoint, data=json.dumps(series), headers=api_headers)
-            print(response)
+
             if response.status_code != 202:
-                raise Exception('error {} sending to DataDog: {}'.format(response.status_code, response.reason))
+                raise Exception ('error {} sending to DataDog: {}'.format(response.status_code, response.reason))
 
     finally:
         session.close()
-
 
 ##########################################################################
 # Main Process
@@ -445,7 +441,19 @@ def main():
         usage_client = oci.usage_api.UsageapiClient(config, signer=signer)
         if cmd.proxy:
             usage_client.base_client.session.proxies = {'https': cmd.proxy}
-        data_dog_metrics_data = usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
+            
+        data_dog_metrics_json = usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
+
+    except Exception as e:
+        logging.getLogger().critical(e)
+        raise RuntimeError("\nError at main function - " + str(e))
+        
+    ############################################
+    # Upload to Data Dog API
+    ############################################
+    try:
+        logging.getLogger().info("\nUploading Data to the DataDog API...")
+        upload_to_data_dog(data_dog_metrics_json)
 
     except Exception as e:
         logging.getLogger().critical(e)

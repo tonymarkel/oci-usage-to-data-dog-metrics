@@ -81,9 +81,10 @@ is_tracing = eval(os.getenv('ENABLE_TRACING', "False"))
 # Create Default String for yesterday's usage data
 ##########################################################################
 today_api = date.today()
-yesterday_api = today_api - timedelta(days = 1)
+yesterday_api = today_api - timedelta(days=1)
 today = str(today_api)
 yesterday = str(yesterday_api)
+
 
 ##########################################################################
 # custom argparse *date* type for user dates
@@ -109,13 +110,13 @@ def check_service_error(code):
             code == 'LimitExceeded'
             )
 
+
 ##########################################################################
 # Create signer for Authentication
 # Input - config_profile and is_instance_principals and is_delegation_token
 # Output - config and signer objects
 ##########################################################################
 def create_signer(config_file, config_profile, is_instance_principals, is_delegation_token):
-
     # if instance principals authentications
     if is_instance_principals:
         try:
@@ -177,29 +178,29 @@ def create_signer(config_file, config_profile, is_instance_principals, is_delega
         )
         return config, signer
 
+
 ##########################################################################
 # Data Dog Specific Functions
 ##########################################################################
 
 # create metric names that conform to Data Dog standards
-def get_usage_metric(sku_name,type):
-    metric_prefix = 'oci.usage.'
-    metric_type = type + '.'
-    metric_name = re.sub('.$','',re.sub('[ ]+', '.', re.sub('[^A-Za-z0-9\ ]+', '', sku_name))).lower()
-    usage_metric= metric_prefix + metric_type + metric_name
-    return usage_metric
+def get_metric_name(type):
+    prefix = os.getenv('OCI_DATADOG_METRIC_PREFIX', 'oci')
+    return f'{prefix}.{type}'
 
-# strip spaces and special characters to create usable tags  
+
+# strip spaces and special characters to create usable tags
 def get_tag_name(sku_name):
     tag_name = re.sub('[^A-Za-z0-9]+', '', sku_name)
     return tag_name
 
-# Usage Daily by Product to Data Dog API Format
-def usage_by_product(usageClient, tenant_id, time_usage_started, time_usage_ended):
 
+# Usage Daily by Product to Data Dog API Format
+def usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended):
+    data_dog_metric_data = []
     try:
         # oci.usage_api.models.RequestSummarizedUsagesDetails
-        requestSummarizedUsagesDetails = oci.usage_api.models.RequestSummarizedUsagesDetails(
+        request_summarized_usages_details = oci.usage_api.models.RequestSummarizedUsagesDetails(
             tenant_id=tenant_id,
             granularity='DAILY',
             query_type='COST',
@@ -209,10 +210,13 @@ def usage_by_product(usageClient, tenant_id, time_usage_started, time_usage_ende
         )
 
         # usageClient.request_summarized_usages
-        request_summarized_usages = usageClient.request_summarized_usages(
-            requestSummarizedUsagesDetails,
+        request_summarized_usages = usage_client.request_summarized_usages(
+            request_summarized_usages_details,
             retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY
         )
+
+        # print out request_summarized_usages.data.items to file
+        logging.getLogger().debug(f"request_summarized_usages: {str(request_summarized_usages.data.items)}")
 
         min_date = None
         max_date = None
@@ -221,56 +225,58 @@ def usage_by_product(usageClient, tenant_id, time_usage_started, time_usage_ende
         ################################
         # Add all cost data to Data Dog array - wayneyu (github)
         ################################
-        data_dog_metric_data = []
-        tenancy=tenant_id
+        tenancy = tenant_id
         # Usage Data
         for item in request_summarized_usages.data.items:
-            data_dog_metric_data.append({
-                "series" : [
-                    {
-                        "metric" : get_usage_metric(item.sku_name,'usage'),
-                        "type": 0,
-                        "points": [
-                            {
-                                "timestamp": time_usage_started.timestamp(),
-                                "value": item.computed_quantity
-                            }
-                        ],
-                        "tags": [
-                            "name:"+get_tag_name(item.sku_name),
-                            "unit:"+item.unit,
-                            "sku:"+item.sku_part_number,
-                            "displayName:"+item.sku_name,
-                            "region:"+item.region,
-                            "tenancy:"+tenancy
-                        ]
-                    }
-                ],
-            })
+            if item.currency == currency:
+                data_dog_metric_data.append({
+                    "series": [
+                        {
+                            "metric": get_metric_name('usage'),
+                            "type": 0,
+                            "points": [
+                                {
+                                    "timestamp": int(datetime.now().timestamp()),
+                                    "value": item.computed_quantity
+                                }
+                            ],
+                            "tags": [
+                                "name:" + get_tag_name(item.sku_name),
+                                "unit:" + item.unit,
+                                "sku:" + item.sku_part_number,
+                                "displayName:" + item.sku_name,
+                                "region:" + item.region,
+                                "tenancy:" + tenancy
+                            ]
+                        }
+                    ],
+                })
         # Cost Data
         for item in request_summarized_usages.data.items:
-            data_dog_metric_data.append({
-                "series": [
-                    {
-                        "metric" : get_usage_metric(item.sku_name,'cost'),
-                        "type": 0,
-                        "points": [
-                            {
-                                "timestamp": time_usage_started.timestamp(),
-                                "value": item.computed_amount,
-                            }
-                        ],
-                        "tags": [
-                            "name:"+get_tag_name(item.sku_name),
-                            "unit:"+item.unit,
-                            "sku:"+item.sku_part_number,
-                            "displayName:"+item.sku_name,
-                            "region:"+item.region,
-                            "tenancy:"+tenancy
-                        ]
-                    }
-                ],
-            })
+            if item.currency == currency:
+                data_dog_metric_data.append({
+                    "series": [
+                        {
+                            "metric": get_metric_name('cost'),
+                            "type": 0,
+                            "unit": currency,
+                            "points": [
+                                {
+                                    "timestamp": int(datetime.now().timestamp()),
+                                    "value": round(item.computed_amount, 2),
+                                }
+                            ],
+                            "tags": [
+                                "name:" + get_tag_name(item.sku_name),
+                                "unit:" + item.unit,
+                                "sku:" + item.sku_part_number,
+                                "displayName:" + item.sku_name,
+                                "region:" + item.region,
+                                "tenancy:" + tenancy
+                            ]
+                        }
+                    ],
+                })
 
     except oci.exceptions.ServiceError as e:
         logging.getLogger().debug("\nService Error at 'usage_daily_product' - " + str(e))
@@ -321,18 +327,24 @@ def upload_to_data_dog(metrics):
 # Main Process
 ##########################################################################
 def main():
-
     # Get Command Line Parser
     # parser = argparse.ArgumentParser()
-    parser = argparse.ArgumentParser(usage=argparse.SUPPRESS, formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=80, width=130))
+    parser = argparse.ArgumentParser(usage=argparse.SUPPRESS,
+                                     formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=80,
+                                                                                         width=130))
     parser.add_argument('-c', default="", dest='config_file', help='OCI CLI Config file')
     parser.add_argument('-t', default="", dest='config_profile', help='Config Profile inside the config file')
     parser.add_argument('-p', default="", dest='proxy', help='Set Proxy (i.e. www-proxy-server.com:80) ')
-    parser.add_argument('-ip', action='store_true', default=False, dest='is_instance_principals', help='Use Instance Principals for Authentication')
-    parser.add_argument('-dt', action='store_true', default=False, dest='is_delegation_token', help='Use Delegation Token for Authentication')
-    parser.add_argument("-ds", default=yesterday, dest='date_start', help="Start Date - format YYYY-MM-DD", type=valid_date_type)
-    parser.add_argument("-de", default=today, dest='date_end', help="End Date - format YYYY-MM-DD, (Not Inclusive)", type=valid_date_type)
-    parser.add_argument("-days", default=None, dest='days', help="Add Days Combined with Start Date (de is ignored if specified)", type=int)
+    parser.add_argument('-ip', action='store_true', default=False, dest='is_instance_principals',
+                        help='Use Instance Principals for Authentication')
+    parser.add_argument('-dt', action='store_true', default=False, dest='is_delegation_token',
+                        help='Use Delegation Token for Authentication')
+    parser.add_argument("-ds", default=yesterday, dest='date_start', help="Start Date - format YYYY-MM-DD",
+                        type=valid_date_type)
+    parser.add_argument("-de", default=today, dest='date_end', help="End Date - format YYYY-MM-DD, (Not Inclusive)",
+                        type=valid_date_type)
+    parser.add_argument("-days", default=None, dest='days',
+                        help="Add Days Combined with Start Date (de is ignored if specified)", type=int)
     cmd = parser.parse_args()
 
     # Log parameters used for debugging
@@ -390,7 +402,8 @@ def main():
     ############################################
     # create signer
     ############################################
-    config, signer = create_signer(cmd.config_file, cmd.config_profile, cmd.is_instance_principals, cmd.is_delegation_token)
+    config, signer = create_signer(cmd.config_file, cmd.config_profile, cmd.is_instance_principals,
+                                   cmd.is_delegation_token)
     tenant_id = ""
 
     logging.getLogger().info("Fetching data", 0)
@@ -428,6 +441,7 @@ def main():
         usage_client = oci.usage_api.UsageapiClient(config, signer=signer)
         if cmd.proxy:
             usage_client.base_client.session.proxies = {'https': cmd.proxy}
+            
         data_dog_metrics_json = usage_by_product(usage_client, tenant_id, time_usage_started, time_usage_ended)
 
     except Exception as e:
@@ -444,6 +458,18 @@ def main():
     except Exception as e:
         logging.getLogger().critical(e)
         raise RuntimeError("\nError at main function - " + str(e))
+
+    ############################################
+    # Upload to Data Dog API
+    ############################################
+    try:
+        logging.getLogger().info("\nUploading Data to the DataDog API...")
+        upload_to_data_dog(data_dog_metrics_data)
+
+    except Exception as e:
+        logging.getLogger().critical(e)
+        raise RuntimeError("\nError at main function - " + str(e))
+
 
 ##########################################################################
 # Main Process
